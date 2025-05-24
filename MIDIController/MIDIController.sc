@@ -21,6 +21,10 @@ MIDIController {
     var <>activeNotes;
     var <noteHandlingEnabled;
     
+    // Button toggle-related properties
+    var <buttonStates;
+    var <buttonCallbacks;
+    
     // Bend-related properties
     var <bendEnabled;
     var <bendRange;
@@ -61,8 +65,8 @@ MIDIController {
         startCC = inStartCC;
         
         // Initialize arrays for both sliders and knobs
-        sliderValues = Array.fill(8, 0);
-        knobValues = Array.fill(8, 0);
+        sliderValues = Array.fill(8, 1);
+        knobValues = Array.fill(8, 1);
         knobRanges = Array.fill(8, 0);
         midiFuncs = IdentityDictionary.new;
         numNotesPlaying = 0;
@@ -76,6 +80,10 @@ MIDIController {
         velocityCtrlMode = false;
         activeNotes = Dictionary.new;
         noteHandlingEnabled = true;
+        
+        // Initialize button toggle-related properties
+        buttonStates = Dictionary.new;
+        buttonCallbacks = Dictionary.new;
         
         // Initialize bend-related properties
         bendEnabled = false;
@@ -231,8 +239,18 @@ MIDIController {
         if(file.isOpen) {
             data = file.readAllString;
             file.close;
+            
+            // Execute the file content to load snapshots into the global ~snapshots variable
             data.interpret;
-            this.debug("Snapshots loaded from %".format(fullPath));
+            
+            // Update the MIDIController's snapshots dictionary with the global ~snapshots
+            if(~snapshots.notNil) {
+                snapshots = ~snapshots.copy;
+                this.debug("Snapshots loaded from % and updated in MIDIController".format(fullPath));
+            } {
+                this.debug("Global ~snapshots variable is nil after loading file");
+            };
+            
             ^true;
         } {
             this.debug("Failed to open file for reading: %".format(fullPath));
@@ -259,13 +277,31 @@ MIDIController {
     setProgrammedMode { |bool, snapshotName|
         if(bool) {
             if(snapshotName.notNil) {
-                if(this.loadSnapshot(snapshotName)) {
+                // First check if the snapshot exists
+                if(snapshots.includesKey(snapshotName)) {
+                    // Get the snapshot
+                    var snapshot = snapshots.at(snapshotName);
+                    
+                    // Apply the snapshot values directly
+                    snapshot.at(\sliders).do { |val, i|
+                        sliderValues[i] = val;
+                    };
+                    
+                    snapshot.at(\knobs).do { |val, i|
+                        knobValues[i] = val;
+                    };
+                    
+                    // Set the current snapshot and enable programmed mode
                     currentSnapshot = snapshotName;
                     programmedMode = true;
+                    
                     this.debug("Programmed mode enabled with snapshot: %".format(snapshotName));
+                    this.debug("Applied slider values: %".format(sliderValues));
+                    this.debug("Applied knob values: %".format(knobValues));
+                    
                     ^true;
                 } {
-                    this.debug("Failed to enable programmed mode: snapshot not found");
+                    this.debug("Failed to enable programmed mode: snapshot '%' not found".format(snapshotName));
                     ^false;
                 };
             } {
@@ -789,6 +825,88 @@ MIDIController {
         if(bendEnvelopeSynth.notNil) {
             bendEnvelopeSynth.free;
             bendEnvelopeSynth = nil;
+        };
+    }
+
+    // Register a button toggle with callback
+    registerButtonToggle { |ccNum, initialState=false, description, callback|
+        var buttonKey = ("button_cc" ++ ccNum).asSymbol;
+        
+        this.debug("Registering button toggle for CC % (%)"
+            .format(ccNum, description ? "unnamed button"));
+        
+        // Store initial state
+        buttonStates[ccNum] = initialState;
+        
+        // Store callback if provided
+        if(callback.notNil) {
+            buttonCallbacks[ccNum] = callback;
+        };
+        
+        // Create CC handler if not already present
+        if(midiFuncs[buttonKey].isNil) {
+            midiFuncs[buttonKey] = MIDIFunc.cc({ |val, num, chan, src|
+                var isOn = val > 0;
+                
+                // Only update if value changed (toggle occurred)
+                if(isOn != buttonStates[ccNum]) {
+                    this.debug("Button CC % toggled to %".format(ccNum, if(isOn, "ON", "OFF")));
+                    
+                    // Update state
+                    buttonStates[ccNum] = isOn;
+                    
+                    // Execute callback if registered
+                    buttonCallbacks[ccNum].value(isOn);
+                };
+            }, ccNum);
+        };
+        
+        ^this;
+    }
+    
+    // Get the current state of a button
+    getButtonState { |ccNum|
+        ^buttonStates[ccNum] ? false;
+    }
+    
+    // Set button state programmatically
+    setButtonState { |ccNum, state, executeCallback=true|
+        if(buttonStates.includesKey(ccNum)) {
+            buttonStates[ccNum] = state;
+            
+            if(executeCallback && buttonCallbacks.includesKey(ccNum)) {
+                buttonCallbacks[ccNum].value(state);
+            };
+            
+            this.debug("Button CC % set to %".format(ccNum, if(state, "ON", "OFF")));
+        } {
+            this.debug("Button CC % not registered".format(ccNum));
+        };
+    }
+    
+    // Debug method to print current slider and knob values
+    printCurrentValues {
+        this.debug("Current slider values: %".format(sliderValues));
+        this.debug("Current knob values: %".format(knobValues));
+        if(buttonStates.size > 0) {
+            this.debug("Button states:");
+            buttonStates.keysValuesDo { |ccNum, state|
+                this.debug("  CC %: %".format(ccNum, if(state, "ON", "OFF")));
+            };
+        };
+        if(programmedMode) {
+            this.debug("Programmed mode is ACTIVE with snapshot: %".format(currentSnapshot));
+            if(currentSnapshot.notNil) {
+                var snapshot = snapshots.at(currentSnapshot);
+                if(snapshot.notNil) {
+                    this.debug("Snapshot values - Sliders: %, Knobs: %".format(
+                        snapshot.at(\sliders), 
+                        snapshot.at(\knobs)
+                    ));
+                };
+            };
+        } {
+            this.debug("Programmed mode is INACTIVE");
         };
     }
 }
